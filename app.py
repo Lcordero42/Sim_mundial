@@ -68,6 +68,7 @@ def get_gspread_client():
     return gspread.authorize(credentials)
 
 
+@st.cache_resource
 def get_spreadsheet():
     client = get_gspread_client()
     return client.open_by_key(SPREADSHEET_ID)
@@ -713,6 +714,18 @@ with tab2:
                             else:
                                 default_index = ['1', 'X', '2'].index(current)
                             widget_key = f'gp_radio_{mid}'
+                            prev_key = f'{widget_key}_prev'
+                            
+                            if prev_key not in st.session_state:
+                                st.session_state[prev_key] = current
+                            
+                            def on_change_gp(mid=mid, user_id=user_id, widget_key=widget_key, prev_key=prev_key):
+                                opcion = st.session_state.get(widget_key)
+                                previo = st.session_state.get(prev_key)
+                                if opcion and opcion in ['1', 'X', '2'] and opcion != previo:
+                                    guardar_pronostico_gp(user_id, mid, opcion)
+                                    st.session_state[prev_key] = opcion
+                            
                             opcion = st.radio(
                                 'Tu apuesta',
                                 ['1', 'X', '2'],
@@ -720,18 +733,9 @@ with tab2:
                                 key=widget_key,
                                 horizontal=True,
                                 label_visibility='collapsed',
-                                disabled=not grupos_abiertos
+                                disabled=not grupos_abiertos,
+                                on_change=on_change_gp
                             )
-                            if grupos_abiertos and mid is not None:
-                                saved_key = f'{widget_key}_saved'
-                                if current not in ['1', 'X', '2']:
-                                    if saved_key not in st.session_state:
-                                        st.session_state[saved_key] = opcion
-                                    elif opcion != st.session_state[saved_key]:
-                                        guardar_pronostico_gp(user_id, mid, opcion)
-                                        st.session_state[saved_key] = opcion
-                                elif opcion != current:
-                                    guardar_pronostico_gp(user_id, mid, opcion)
                         with col_c:
                             st.write(f"Resultado real: {partido['resultado_real'] or 'Pendiente'}")
 
@@ -768,6 +772,41 @@ with tab2:
                             nombre_partido = obtener_nombre_partido_fp(partido_stage, team_map)
                             st.markdown(f"**{nombre_partido}**")
                             pred = pron['fp'].get(str(mid), {'goles_local': 0, 'goles_visitante': 0, 'ganador_penaltis': None})
+                            
+                            widget_key_local = f'fp_home_{mid}_{idx}'
+                            widget_key_away = f'fp_away_{mid}_{idx}'
+                            prev_key_fp = f'fp_prev_{mid}'
+                            
+                            if prev_key_fp not in st.session_state:
+                                st.session_state[prev_key_fp] = {
+                                    'goles_local': pred.get('goles_local', 0),
+                                    'goles_visitante': pred.get('goles_visitante', 0),
+                                    'ganador_penaltis': pred.get('ganador_penaltis')
+                                }
+                            
+                            def on_change_goles_fp(mid=mid, user_id=user_id, prev_key_fp=prev_key_fp, widget_key_local=widget_key_local, widget_key_away=widget_key_away):
+                                goles_local = st.session_state.get(widget_key_local, 0)
+                                goles_visitante = st.session_state.get(widget_key_away, 0)
+                                previo = st.session_state.get(prev_key_fp, {})
+                                
+                                if goles_local != previo.get('goles_local', 0):
+                                    guardar_pronostico_fp(user_id, mid, 'goles_local', goles_local)
+                                    previo['goles_local'] = goles_local
+                                
+                                if goles_visitante != previo.get('goles_visitante', 0):
+                                    guardar_pronostico_fp(user_id, mid, 'goles_visitante', goles_visitante)
+                                    previo['goles_visitante'] = goles_visitante
+                                
+                                if goles_local == goles_visitante:
+                                    if previo.get('ganador_penaltis') is not None:
+                                        pass
+                                else:
+                                    if previo.get('ganador_penaltis') is not None:
+                                        guardar_pronostico_fp(user_id, mid, 'ganador_penaltis', None)
+                                        previo['ganador_penaltis'] = None
+                                
+                                st.session_state[prev_key_fp] = previo
+                            
                             col1, col2 = st.columns(2)
                             with col1:
                                 goles_local = st.number_input(
@@ -775,22 +814,21 @@ with tab2:
                                     min_value=0,
                                     step=1,
                                     value=pred.get('goles_local', 0),
-                                    key=f'fp_home_{mid}_{idx}',
-                                    disabled=not stage_abierta
+                                    key=widget_key_local,
+                                    disabled=not stage_abierta,
+                                    on_change=on_change_goles_fp if stage_abierta else None
                                 )
-                                if stage_abierta:
-                                    guardar_pronostico_fp(user_id, mid, 'goles_local', goles_local)
                             with col2:
                                 goles_visitante = st.number_input(
                                     f'Goles Visitante',
                                     min_value=0,
                                     step=1,
                                     value=pred.get('goles_visitante', 0),
-                                    key=f'fp_away_{mid}_{idx}',
-                                    disabled=not stage_abierta
+                                    key=widget_key_away,
+                                    disabled=not stage_abierta,
+                                    on_change=on_change_goles_fp if stage_abierta else None
                                 )
-                                if stage_abierta:
-                                    guardar_pronostico_fp(user_id, mid, 'goles_visitante', goles_visitante)
+                            
                             if goles_local == goles_visitante:
                                 st.info(f'⚠️ Empate {goles_local}-{goles_visitante}. Selecciona ganador en penaltis:')
                                 local_name = resolver_nombre_fp(partido_stage, team_map, local=True)
@@ -798,18 +836,32 @@ with tab2:
                                 opciones_penaltis = [local_name, away_name]
                                 seleccion_actual = pred.get('ganador_penaltis')
                                 opcion_index = opciones_penaltis.index(seleccion_actual) if seleccion_actual in opciones_penaltis else 0
+                                
+                                widget_key_penaltis = f'fp_penaltis_{mid}_{idx}'
+                                prev_key_penaltis = f'{widget_key_penaltis}_prev'
+                                
+                                if prev_key_penaltis not in st.session_state:
+                                    st.session_state[prev_key_penaltis] = seleccion_actual
+                                
+                                def on_change_penaltis(mid=mid, user_id=user_id, widget_key_penaltis=widget_key_penaltis, prev_key_penaltis=prev_key_penaltis, prev_key_fp=prev_key_fp):
+                                    ganador = st.session_state.get(widget_key_penaltis)
+                                    previo_penaltis = st.session_state.get(prev_key_penaltis)
+                                    if ganador and ganador != previo_penaltis:
+                                        guardar_pronostico_fp(user_id, mid, 'ganador_penaltis', ganador)
+                                        st.session_state[prev_key_penaltis] = ganador
+                                        previo_fp = st.session_state.get(prev_key_fp, {})
+                                        previo_fp['ganador_penaltis'] = ganador
+                                        st.session_state[prev_key_fp] = previo_fp
+                                
                                 ganador = st.selectbox(
                                     'Ganador en penaltis 🎯',
                                     opciones_penaltis,
                                     index=opcion_index,
-                                    key=f'fp_penaltis_{mid}_{idx}',
-                                    disabled=not stage_abierta
+                                    key=widget_key_penaltis,
+                                    disabled=not stage_abierta,
+                                    on_change=on_change_penaltis if stage_abierta else None
                                 )
-                                if stage_abierta:
-                                    guardar_pronostico_fp(user_id, mid, 'ganador_penaltis', ganador)
-                            else:
-                                if stage_abierta:
-                                    guardar_pronostico_fp(user_id, mid, 'ganador_penaltis', None)
+                            
                             if partido_stage.get('home_goals_real') is not None and partido_stage.get('away_goals_real') is not None:
                                 st.write(f"Resultado real: {partido_stage['home_goals_real']}-{partido_stage['away_goals_real']}")
                             else:
