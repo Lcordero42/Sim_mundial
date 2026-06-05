@@ -74,6 +74,18 @@ def get_spreadsheet():
     return client.open_by_key(SPREADSHEET_ID)
 
 
+@st.cache_resource
+def get_usuarios_worksheet():
+    sheet = get_spreadsheet()
+    return ensure_worksheet(sheet, USUARIOS_SHEET_NAME, USUARIOS_COLUMNS)
+
+
+@st.cache_resource
+def get_pronosticos_worksheet():
+    sheet = get_spreadsheet()
+    return ensure_worksheet(sheet, PRONOSTICOS_SHEET_NAME, PRONOSTICOS_COLUMNS)
+
+
 def ensure_worksheet(sheet, title: str, headers: list[str]):
     try:
         worksheet = sheet.worksheet(title)
@@ -101,8 +113,7 @@ def worksheet_to_dataframe(worksheet, columns: list[str]) -> pd.DataFrame:
 
 @st.cache_data(ttl=30)
 def cargar_usuarios_sheet() -> pd.DataFrame:
-    sheet = get_spreadsheet()
-    worksheet = ensure_worksheet(sheet, USUARIOS_SHEET_NAME, USUARIOS_COLUMNS)
+    worksheet = get_usuarios_worksheet()
     df = worksheet_to_dataframe(worksheet, USUARIOS_COLUMNS)
     df['usuario_id'] = df['usuario_id'].astype(str)
     return df
@@ -110,8 +121,7 @@ def cargar_usuarios_sheet() -> pd.DataFrame:
 
 @st.cache_data(ttl=30)
 def cargar_pronosticos_sheet() -> pd.DataFrame:
-    sheet = get_spreadsheet()
-    worksheet = ensure_worksheet(sheet, PRONOSTICOS_SHEET_NAME, PRONOSTICOS_COLUMNS)
+    worksheet = get_pronosticos_worksheet()
     df = worksheet_to_dataframe(worksheet, PRONOSTICOS_COLUMNS)
     df['usuario_id'] = df['usuario_id'].astype(str)
     df['match_id'] = df['match_id'].astype(str)
@@ -231,10 +241,9 @@ def crear_usuario(nombre: str, avatar: str, pin: str) -> str | None:
     while user_id in usuarios['usuario_id'].tolist():
         user_id = f"{original}_{suffix}"
         suffix += 1
-    sheet = get_spreadsheet()
-    worksheet = ensure_worksheet(sheet, USUARIOS_SHEET_NAME, USUARIOS_COLUMNS)
+    worksheet = get_usuarios_worksheet()
     worksheet.append_row([user_id, nombre.strip(), hash_pin(pin), avatar], value_input_option='USER_ENTERED')
-    st.cache_data.clear()
+    cargar_usuarios_sheet.clear()
     return user_id
 
 
@@ -251,11 +260,11 @@ def actualizar_perfil(user_id: str, nombre: str, avatar: str) -> bool:
     match = usuarios[usuarios['usuario_id'] == user_id]
     if match.empty:
         return False
-    worksheet = get_spreadsheet().worksheet(USUARIOS_SHEET_NAME)
+    worksheet = get_usuarios_worksheet()
     row_number = int(match.index[0]) + 2
     worksheet.update(f'B{row_number}', nombre.strip())
     worksheet.update(f'D{row_number}', avatar)
-    st.cache_data.clear()
+    cargar_usuarios_sheet.clear()
     return True
 
 
@@ -315,6 +324,115 @@ def guardar_pronostico_fp(user_id: str, match_id: int, campo: str, valor):
     if campo != 'ganador_penaltis' and pronostico.get('goles_local') != pronostico.get('goles_visitante'):
         pronostico['ganador_penaltis'] = None
     guardar_pronostico_row(user_id, str(match_id), 'fp', pronostico)
+
+
+def get_pending_pronosticos_for_user(user_id: str) -> dict:
+    if 'pending_pronosticos' not in st.session_state:
+        st.session_state['pending_pronosticos'] = {}
+    pending = st.session_state['pending_pronosticos']
+    if user_id not in pending:
+        pending[user_id] = {'gp': {}, 'fp': {}}
+    return pending[user_id]
+
+
+def store_pending_gp(user_id: str, match_id: int, value: str):
+    pending = get_pending_pronosticos_for_user(user_id)
+    if value in ['1', 'X', '2']:
+        pending['gp'][str(match_id)] = value
+
+
+def store_pending_fp(user_id: str, match_id: int, campo: str, valor):
+    pending = get_pending_pronosticos_for_user(user_id)
+    partido = pending['fp'].setdefault(str(match_id), {
+        'goles_local': None,
+        'goles_visitante': None,
+        'ganador_penaltis': None
+    })
+    partido[campo] = valor
+    if campo != 'ganador_penaltis' and partido.get('goles_local') is not None and partido.get('goles_visitante') is not None and partido['goles_local'] != partido['goles_visitante']:
+        partido['ganador_penaltis'] = None
+
+
+def merge_fp_pronostico(existing: dict, pending: dict) -> dict:
+    merged = {
+        'goles_local': int(existing.get('goles_local', 0) or 0),
+        'goles_visitante': int(existing.get('goles_visitante', 0) or 0),
+        'ganador_penaltis': existing.get('ganador_penaltis')
+    }
+    if pending is not None:
+        for key, value in pending.items():
+            if value is not None:
+                merged[key] = value
+    if merged['goles_local'] != merged['goles_visitante']:
+        merged['ganador_penaltis'] = None
+    return merged
+
+
+def guardar_pronosticos_batch(user_id: str) -> bool:
+    pending = get_pending_pronosticos_for_user(user_id)
+    if not pending['gp'] and not pending['fp']:
+        return False
+    worksheet = get_pronosticos_worksheet()
+    existing = worksheet_to_dataframe(worksheet, PRONOSTICOS_COLUMNS)
+    existing['usuario_id'] = existing['usuario_id'].astype(str)
+    existing['match_id'] = existing['match_id'].astype(str)
+    existing['tipo_fase'] = existing['tipo_fase'].astype(str).str.lower()
+
+    batch_updates = []
+    append_rows = []
+
+    for match_id, resultado in pending['gp'].items():
+        mask = (
+            (existing['usuario_id'] == user_id) &
+            (existing['match_id'] == str(match_id)) &
+            (existing['tipo_fase'] == 'gp')
+        )
+        payload = str(resultado)
+        if mask.any():
+            row_number = int(mask.idxmax()) + 2
+            batch_updates.append({'range': f'D{row_number}', 'values': [[payload]]})
+        else:
+            append_rows.append([user_id, str(match_id), 'gp', payload])
+
+    for match_id, pending_fp in pending['fp'].items():
+        existing_fp = {'goles_local': 0, 'goles_visitante': 0, 'ganador_penaltis': None}
+        mask = (
+            (existing['usuario_id'] == user_id) &
+            (existing['match_id'] == str(match_id)) &
+            (existing['tipo_fase'] == 'fp')
+        )
+        if mask.any():
+            row = existing[mask].iloc[0]
+            try:
+                existing_fp['goles_local'] = int(row.get('pronostico', '0'))
+            except Exception:
+                pass
+            try:
+                parsed = json.loads(row.get('pronostico', '{}'))
+                if isinstance(parsed, dict):
+                    existing_fp = {
+                        'goles_local': int(parsed.get('goles_local', 0) or 0),
+                        'goles_visitante': int(parsed.get('goles_visitante', 0) or 0),
+                        'ganador_penaltis': parsed.get('ganador_penaltis')
+                    }
+            except Exception:
+                pass
+        merged = merge_fp_pronostico(existing_fp, pending_fp)
+        payload = json.dumps(merged, ensure_ascii=False)
+        if mask.any():
+            row_number = int(mask.idxmax()) + 2
+            batch_updates.append({'range': f'D{row_number}', 'values': [[payload]]})
+        else:
+            append_rows.append([user_id, str(match_id), 'fp', payload])
+
+    if batch_updates:
+        worksheet.batch_update(batch_updates)
+    if append_rows:
+        worksheet.append_rows(append_rows, value_input_option='USER_ENTERED')
+
+    cargar_pronosticos_sheet.clear()
+    st.session_state['pending_pronosticos'][user_id] = {'gp': {}, 'fp': {}}
+    return True
 
 
 def iniciar_sesion_usuario(nombre: str, pin: str) -> bool:
@@ -711,9 +829,20 @@ with tab2:
         st.warning('Debes iniciar sesión en la pestaña Registro.')
     else:
         user_id = st.session_state['usuario_id']
+        pending = get_pending_pronosticos_for_user(user_id)
         ahora = datetime.now(TZ_MADRID)
         cierre_grupos = obtener_cierre_grupos(df_gp)
         grupos_abiertos = cierre_grupos is None or ahora < cierre_grupos
+
+        if pending['gp'] or pending['fp']:
+            st.info('📝 Tienes cambios pendientes. Presiona el botón Guardar para confirmarlos en Google Sheets.')
+
+        if st.button('💾 Guardar todos mis pronósticos', use_container_width=True):
+            if guardar_pronosticos_batch(user_id):
+                st.success('✅ Pronósticos guardados correctamente en Google Sheets.')
+                st.experimental_rerun()
+            else:
+                st.warning('No hay cambios pendientes para guardar.')
 
         st.subheader('Fase de Grupos')
         if cierre_grupos is not None and not grupos_abiertos:
@@ -737,7 +866,7 @@ with tab2:
                         with col_a:
                             st.markdown(f"**{home_label} vs {away_label}**")
                         with col_b:
-                            current = pron['gp'].get(str(mid))
+                            current = pending['gp'].get(str(mid), pron['gp'].get(str(mid)))
                             if current not in ['1', 'X', '2']:
                                 default_index = 0
                             else:
@@ -752,7 +881,7 @@ with tab2:
                                 opcion = st.session_state.get(widget_key)
                                 previo = st.session_state.get(prev_key)
                                 if opcion and opcion in ['1', 'X', '2'] and opcion != previo:
-                                    guardar_pronostico_gp(user_id, mid, opcion)
+                                    store_pending_gp(user_id, mid, opcion)
                                     st.session_state[prev_key] = opcion
                             
                             opcion = st.radio(
@@ -801,6 +930,10 @@ with tab2:
                             nombre_partido = obtener_nombre_partido_fp(partido_stage, team_map)
                             st.markdown(f"**{nombre_partido}**")
                             pred = pron['fp'].get(str(mid), {'goles_local': 0, 'goles_visitante': 0, 'ganador_penaltis': None})
+                            if str(mid) in pending['fp']:
+                                for k, v in pending['fp'][str(mid)].items():
+                                    if v is not None:
+                                        pred[k] = v
                             
                             widget_key_local = f'fp_home_{mid}_{idx}'
                             widget_key_away = f'fp_away_{mid}_{idx}'
@@ -819,19 +952,18 @@ with tab2:
                                 previo = st.session_state.get(prev_key_fp, {})
                                 
                                 if goles_local != previo.get('goles_local', 0):
-                                    guardar_pronostico_fp(user_id, mid, 'goles_local', goles_local)
+                                    store_pending_fp(user_id, mid, 'goles_local', goles_local)
                                     previo['goles_local'] = goles_local
                                 
                                 if goles_visitante != previo.get('goles_visitante', 0):
-                                    guardar_pronostico_fp(user_id, mid, 'goles_visitante', goles_visitante)
+                                    store_pending_fp(user_id, mid, 'goles_visitante', goles_visitante)
                                     previo['goles_visitante'] = goles_visitante
                                 
                                 if goles_local == goles_visitante:
-                                    if previo.get('ganador_penaltis') is not None:
-                                        pass
+                                    pass
                                 else:
                                     if previo.get('ganador_penaltis') is not None:
-                                        guardar_pronostico_fp(user_id, mid, 'ganador_penaltis', None)
+                                        store_pending_fp(user_id, mid, 'ganador_penaltis', None)
                                         previo['ganador_penaltis'] = None
                                 
                                 st.session_state[prev_key_fp] = previo
@@ -876,7 +1008,7 @@ with tab2:
                                     ganador = st.session_state.get(widget_key_penaltis)
                                     previo_penaltis = st.session_state.get(prev_key_penaltis)
                                     if ganador and ganador != previo_penaltis:
-                                        guardar_pronostico_fp(user_id, mid, 'ganador_penaltis', ganador)
+                                        store_pending_fp(user_id, mid, 'ganador_penaltis', ganador)
                                         st.session_state[prev_key_penaltis] = ganador
                                         previo_fp = st.session_state.get(prev_key_fp, {})
                                         previo_fp['ganador_penaltis'] = ganador
