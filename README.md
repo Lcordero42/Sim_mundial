@@ -27,5 +27,5 @@ Despliegue en Streamlit Cloud
 
 Notas
 
-- La aplicación persiste datos en `porra_db.json` en la raíz del proyecto.
-- Asegúrate de que `app.py` pueda acceder a Internet para leer las hojas de Google Sheets.
+- La aplicación persiste usuarios y pronósticos directamente en Google Sheets.
+- Asegúrate de que `app.py` pueda acceder a Internet y que las credenciales de Google Sheets estén configuradas en `st.secrets`.

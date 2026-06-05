@@ -1,11 +1,13 @@
 import json
-import os
 import hashlib
 import streamlit as st
 import pandas as pd
 import re
 from datetime import datetime
 import pytz
+import gspread
+from google.oauth2.service_account import Credentials
+from gspread.exceptions import WorksheetNotFound
 
 # ============================================================================
 # Configuración de Google Sheets
@@ -17,7 +19,11 @@ GIDS = {
     'Matches_FP': 1793296069,
     'Stages': 542487095
 }
-DB_FILE = "porra_db.json"
+SPREADSHEET_ID = re.search(r"/d/([a-zA-Z0-9_-]+)", URL_BASE).group(1)
+USUARIOS_SHEET_NAME = 'Usuarios_DB'
+PRONOSTICOS_SHEET_NAME = 'Pronosticos_DB'
+USUARIOS_COLUMNS = ['usuario_id', 'nombre', 'pin', 'avatar']
+PRONOSTICOS_COLUMNS = ['usuario_id', 'match_id', 'tipo_fase', 'pronostico']
 
 # ============================================================================
 # Zona Horaria
@@ -42,29 +48,74 @@ def cargar_todas_las_hojas():
     return {name: cargar_hoja_por_gid(URL_BASE, gid) for name, gid in GIDS.items()}
 
 # ============================================================================
-# Persistencia local
+# Persistencia en Google Sheets
 # ============================================================================
-def cargar_db() -> dict:
-    if not os.path.exists(DB_FILE):
-        return {'usuarios': {}, 'quinielas': {}}
-    try:
-        with open(DB_FILE, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        if not isinstance(data, dict):
-            return {'usuarios': {}, 'quinielas': {}}
-        data.setdefault('usuarios', {})
-        data.setdefault('quinielas', {})
-        return data
-    except Exception:
-        return {'usuarios': {}, 'quinielas': {}}
+
+def get_service_account_info() -> dict:
+    secret = st.secrets.get('gcp_service_account') or st.secrets.get('google_service_account')
+    if not secret:
+        raise RuntimeError('Faltan las credenciales de Google Sheets en st.secrets["gcp_service_account"] o st.secrets["google_service_account"].')
+    if isinstance(secret, str):
+        return json.loads(secret)
+    return secret
 
 
-def guardar_db(db: dict):
+def get_gspread_client():
+    credentials = Credentials.from_service_account_info(
+        get_service_account_info(),
+        scopes=['https://www.googleapis.com/auth/spreadsheets']
+    )
+    return gspread.authorize(credentials)
+
+
+def get_spreadsheet():
+    client = get_gspread_client()
+    return client.open_by_key(SPREADSHEET_ID)
+
+
+def ensure_worksheet(sheet, title: str, headers: list[str]):
     try:
-        with open(DB_FILE, 'w', encoding='utf-8') as f:
-            json.dump(db, f, indent=2, ensure_ascii=False)
-    except Exception:
-        pass
+        worksheet = sheet.worksheet(title)
+    except WorksheetNotFound:
+        worksheet = sheet.add_worksheet(title=title, rows=1000, cols=len(headers))
+        worksheet.append_row(headers)
+        return worksheet
+    current_headers = worksheet.row_values(1)
+    if current_headers != headers:
+        worksheet.update('A1', [headers])
+    return worksheet
+
+
+def worksheet_to_dataframe(worksheet, columns: list[str]) -> pd.DataFrame:
+    rows = worksheet.get_all_values()
+    if not rows or len(rows) < 2:
+        return pd.DataFrame(columns=columns)
+    header = rows[0]
+    df = pd.DataFrame(rows[1:], columns=header)
+    for column in columns:
+        if column not in df.columns:
+            df[column] = ''
+    return df[columns].fillna('')
+
+
+@st.cache_data(ttl=30)
+def cargar_usuarios_sheet() -> pd.DataFrame:
+    sheet = get_spreadsheet()
+    worksheet = ensure_worksheet(sheet, USUARIOS_SHEET_NAME, USUARIOS_COLUMNS)
+    df = worksheet_to_dataframe(worksheet, USUARIOS_COLUMNS)
+    df['usuario_id'] = df['usuario_id'].astype(str)
+    return df
+
+
+@st.cache_data(ttl=30)
+def cargar_pronosticos_sheet() -> pd.DataFrame:
+    sheet = get_spreadsheet()
+    worksheet = ensure_worksheet(sheet, PRONOSTICOS_SHEET_NAME, PRONOSTICOS_COLUMNS)
+    df = worksheet_to_dataframe(worksheet, PRONOSTICOS_COLUMNS)
+    df['usuario_id'] = df['usuario_id'].astype(str)
+    df['match_id'] = df['match_id'].astype(str)
+    df['tipo_fase'] = df['tipo_fase'].astype(str).str.lower()
+    return df
 
 
 def hash_pin(pin: str) -> str:
@@ -78,78 +129,160 @@ def slugify(nombre: str) -> str:
     return texto.strip("_")
 
 
+def normalize_team_key(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(name or '').strip().lower())
+
+
+TEAM_FLAG_MAP = {
+    'argentina': '🇦🇷',
+    'brazil': '🇧🇷',
+    'mexico': '🇲🇽',
+    'switzerland': '🇨🇭',
+    'colombia': '🇨🇴',
+    'uruguay': '🇺🇾',
+    'france': '🇫🇷',
+    'spain': '🇪🇸',
+    'portugal': '🇵🇹',
+    'germany': '🇩🇪',
+    'england': '🇬🇧',
+    'belgium': '🇧🇪',
+    'netherlands': '🇳🇱',
+    'croatia': '🇭🇷',
+    'morocco': '🇲🇦',
+    'canada': '🇨🇦',
+    'senegal': '🇸🇳',
+    'serbia': '🇷🇸',
+    'poland': '🇵🇱',
+    'japan': '🇯🇵',
+    'southkorea': '🇰🇷',
+    'korearepublic': '🇰🇷',
+    'usa': '🇺🇸',
+    'unitedstates': '🇺🇸',
+    'australia': '🇦🇺',
+    'tunisia': '🇹🇳',
+    'costarica': '🇨🇷',
+    'cameroon': '🇨🇲',
+    'ghana': '🇬🇭',
+    'sweden': '🇸🇪',
+    'denmark': '🇩🇰',
+    'wales': '🏴',
+    'qatar': '🇶🇦'
+}
+
+
+def format_team_label(team_name: str) -> str:
+    name = str(team_name or '').strip()
+    emoji = TEAM_FLAG_MAP.get(normalize_team_key(name), '')
+    return f"{emoji} {name}".strip() if name else ''
+
+
 def buscar_usuario_por_nombre(nombre: str) -> str | None:
     slug = slugify(nombre)
     if not slug:
         return None
-    for uid, usuario in db['usuarios'].items():
-        if uid == slug or slugify(usuario.get('name', '')) == slug:
+    usuarios = cargar_usuarios_sheet()
+    for _, row in usuarios.iterrows():
+        uid = str(row['usuario_id'])
+        nombre_registro = str(row['nombre'] or '')
+        if uid == slug or slugify(nombre_registro) == slug:
             return uid
     return None
 
 
 def crear_usuario(nombre: str, avatar: str, pin: str) -> str | None:
+    usuarios = cargar_usuarios_sheet()
     user_id = slugify(nombre)
     if not user_id:
         return None
     original = user_id
     suffix = 1
-    while user_id in db['usuarios']:
+    while user_id in usuarios['usuario_id'].tolist():
         user_id = f"{original}_{suffix}"
         suffix += 1
-    db['usuarios'][user_id] = {
-        'name': nombre.strip(),
-        'avatar': avatar,
-        'pin_hash': hash_pin(pin),
-        'created_at': datetime.now(TZ_MADRID).isoformat()
-    }
-    db['quinielas'][user_id] = {'gp': {}, 'fp': {}}
-    guardar_db(db)
+    sheet = get_spreadsheet()
+    worksheet = ensure_worksheet(sheet, USUARIOS_SHEET_NAME, USUARIOS_COLUMNS)
+    worksheet.append_row([user_id, nombre.strip(), hash_pin(pin), avatar], value_input_option='USER_ENTERED')
+    st.cache_data.clear()
     return user_id
 
 
 def verificar_pin(user_id: str, pin: str) -> bool:
-    usuario = db['usuarios'].get(user_id)
-    if not usuario:
+    usuarios = cargar_usuarios_sheet()
+    match = usuarios[usuarios['usuario_id'] == user_id]
+    if match.empty:
         return False
-    return usuario.get('pin_hash') == hash_pin(pin)
+    return match.iloc[0]['pin'] == hash_pin(pin)
 
 
 def actualizar_perfil(user_id: str, nombre: str, avatar: str) -> bool:
-    if user_id not in db['usuarios']:
+    usuarios = cargar_usuarios_sheet()
+    match = usuarios[usuarios['usuario_id'] == user_id]
+    if match.empty:
         return False
-    nuevo_slug = slugify(nombre)
-    if nuevo_slug and nuevo_slug != user_id and nuevo_slug in db['usuarios']:
-        return False
-    db['usuarios'][user_id]['name'] = nombre.strip()
-    db['usuarios'][user_id]['avatar'] = avatar
-    guardar_db(db)
+    worksheet = get_spreadsheet().worksheet(USUARIOS_SHEET_NAME)
+    row_number = int(match.index[0]) + 2
+    worksheet.update(f'B{row_number}', nombre.strip())
+    worksheet.update(f'D{row_number}', avatar)
+    st.cache_data.clear()
     return True
 
 
-def asegurar_quiniela_usuario(user_id: str):
-    if user_id not in db['quinielas']:
-        db['quinielas'][user_id] = {'gp': {}, 'fp': {}}
-        guardar_db(db)
-    return db['quinielas'][user_id]
+def obtener_quiniela_usuario(user_id: str, pronosticos_df: pd.DataFrame | None = None) -> dict:
+    df = pronosticos_df if pronosticos_df is not None else cargar_pronosticos_sheet()
+    usuario_df = df[df['usuario_id'] == user_id]
+    result = {'gp': {}, 'fp': {}}
+    for _, row in usuario_df.iterrows():
+        match_id = str(row.get('match_id', '')).strip()
+        tipo_fase = str(row.get('tipo_fase', '')).strip().lower()
+        pronostico = row.get('pronostico', '')
+        if tipo_fase == 'gp':
+            result['gp'][match_id] = pronostico
+        elif tipo_fase == 'fp':
+            try:
+                parsed = json.loads(pronostico)
+                if not isinstance(parsed, dict):
+                    parsed = {}
+            except Exception:
+                parsed = {}
+            parsed.setdefault('goles_local', 0)
+            parsed.setdefault('goles_visitante', 0)
+            parsed.setdefault('ganador_penaltis', None)
+            result['fp'][match_id] = parsed
+    return result
 
 
-def obtener_quiniela_usuario(user_id: str) -> dict:
-    return asegurar_quiniela_usuario(user_id)
+def guardar_pronostico_row(user_id: str, match_id: str, tipo_fase: str, pronostico):
+    sheet = get_spreadsheet()
+    worksheet = ensure_worksheet(sheet, PRONOSTICOS_SHEET_NAME, PRONOSTICOS_COLUMNS)
+    pronosticos = cargar_pronosticos_sheet()
+    mask = (
+        (pronosticos['usuario_id'] == user_id) &
+        (pronosticos['match_id'] == str(match_id)) &
+        (pronosticos['tipo_fase'] == tipo_fase)
+    )
+    payload = json.dumps(pronostico, ensure_ascii=False) if tipo_fase == 'fp' else str(pronostico)
+    if mask.any():
+        row_number = int(mask.idxmax()) + 2
+        worksheet.update(f'D{row_number}', payload)
+    else:
+        worksheet.append_row([user_id, str(match_id), tipo_fase, payload], value_input_option='USER_ENTERED')
+    st.cache_data.clear()
 
 
 def guardar_pronostico_gp(user_id: str, match_id: int, resultado: str):
-    pronosticos = asegurar_quiniela_usuario(user_id)
-    pronosticos['gp'][str(match_id)] = resultado
-    guardar_db(db)
+    guardar_pronostico_row(user_id, str(match_id), 'gp', resultado)
 
 
 def guardar_pronostico_fp(user_id: str, match_id: int, campo: str, valor):
-    pronosticos = asegurar_quiniela_usuario(user_id)
-    partido = pronosticos['fp'].get(str(match_id), {'goles_local': 0, 'goles_visitante': 0, 'ganador_penaltis': None})
-    partido[campo] = valor
-    pronosticos['fp'][str(match_id)] = partido
-    guardar_db(db)
+    pronostico = obtener_quiniela_usuario(user_id)['fp'].get(str(match_id), {
+        'goles_local': 0,
+        'goles_visitante': 0,
+        'ganador_penaltis': None
+    })
+    pronostico[campo] = valor
+    if campo != 'ganador_penaltis' and pronostico.get('goles_local') != pronostico.get('goles_visitante'):
+        pronostico['ganador_penaltis'] = None
+    guardar_pronostico_row(user_id, str(match_id), 'fp', pronostico)
 
 
 def iniciar_sesion_usuario(nombre: str, pin: str) -> bool:
@@ -233,8 +366,8 @@ def obtener_nombre_partido_fp(partido: dict, team_map: dict) -> str:
     label_local, label_visitante = extraer_labels_match_label(partido.get('match_label', ''))
     home_id = partido.get('home_id')
     away_id = partido.get('away_id')
-    home = team_map.get(home_id, label_local) if home_id is not None else label_local
-    away = team_map.get(away_id, label_visitante) if away_id is not None else label_visitante
+    home = format_team_label(team_map.get(home_id, label_local)) if home_id is not None else format_team_label(label_local)
+    away = format_team_label(team_map.get(away_id, label_visitante)) if away_id is not None else format_team_label(label_visitante)
     return f"⚽ {home} vs {away}"
 
 
@@ -243,8 +376,8 @@ def resolver_nombre_fp(partido: dict, team_map: dict, local: bool) -> str:
     label = label_local if local else label_visitante
     team_id = partido.get('home_id') if local else partido.get('away_id')
     if team_id is not None:
-        return team_map.get(team_id, label)
-    return label or (partido.get('home') if local else partido.get('away', 'Equipo'))
+        return format_team_label(team_map.get(team_id, label))
+    return format_team_label(label or (partido.get('home') if local else partido.get('away', 'Equipo')))
 
 # ============================================================================
 # Session state
@@ -465,7 +598,8 @@ def puntos_usuario_quiniela(usuario_id: str, partidos_gp: list, partidos_fp: lis
     return puntos
 
 
-db = cargar_db()
+usuarios_df = cargar_usuarios_sheet()
+pronosticos_df = cargar_pronosticos_sheet()
 
 df_teams, df_gp, df_fp, df_stages = cargar_y_preparar_datos()
 team_map = map_teams(df_teams)
@@ -486,36 +620,41 @@ with col1:
 with col2:
     st.write(f"Partidos de fase final: {len(partidos_fp)}")
 with col3:
-    st.write(f"Usuarios registrados: {len(db['usuarios'])}")
+    st.write(f"Usuarios registrados: {len(usuarios_df)}")
 
 st.markdown('---')
 
 tab1, tab2, tab3, tab4 = st.tabs(["👤 Registro", "⚽ Tus Pronósticos", "🏆 Clasificación del Mundial", "📊 Clasificación de la Quiniela"])
 
 with tab1:
-    st.header("👤 Registro")
+    st.header("👤 Acceso")
     if st.session_state['usuario_id'] is None:
-        with st.form('registro_form'):
-            nombre = st.text_input('Nombre')
-            existing_id = buscar_usuario_por_nombre(nombre) if nombre else None
-            if existing_id:
-                pin = st.text_input('PIN de 4 dígitos', type='password', max_chars=4)
-                if st.form_submit_button('Iniciar sesión'):
-                    if not pin.isdigit() or len(pin) != 4:
-                        st.error('El PIN debe tener 4 dígitos.')
-                    elif iniciar_sesion_usuario(nombre, pin):
-                        st.success('🔒 Sesión iniciada correctamente.')
-                        st.experimental_rerun()
-                    else:
-                        st.error('PIN incorrecto. Intenta de nuevo.')
-            else:
+        with st.form('login_form'):
+            nombre_login = st.text_input('Nombre de Usuario')
+            pin_login = st.text_input('PIN de 4 dígitos', type='password', max_chars=4)
+            if st.form_submit_button('Iniciar Sesión'):
+                if not nombre_login or not nombre_login.strip():
+                    st.error('Ingresa un nombre de usuario válido.')
+                elif not pin_login.isdigit() or len(pin_login) != 4:
+                    st.error('El PIN debe tener 4 dígitos.')
+                elif iniciar_sesion_usuario(nombre_login, pin_login):
+                    st.success('🔒 Sesión iniciada correctamente.')
+                    st.experimental_rerun()
+                else:
+                    st.error('Usuario o PIN incorrecto. Intenta nuevamente.')
+
+        with st.expander('⚠️ ¿No tienes cuenta? Regístrate aquí', expanded=False):
+            with st.form('register_form'):
+                nombre = st.text_input('Nombre')
                 avatar = st.selectbox('Avatar', ["⚽", "🏆", "🥇", "👤", "🧔", "👩"])
                 pin = st.text_input('Crea un PIN de 4 dígitos', type='password', max_chars=4)
-                if st.form_submit_button('Crear cuenta'):
+                if st.form_submit_button('Crear Cuenta'):
                     if not nombre or not nombre.strip():
                         st.error('Ingresa un nombre válido.')
                     elif not pin.isdigit() or len(pin) != 4:
                         st.error('El PIN debe tener 4 dígitos.')
+                    elif buscar_usuario_por_nombre(nombre):
+                        st.error('Ya existe un usuario con ese nombre. Elige otro nombre.')
                     else:
                         nuevo_id = crear_usuario(nombre, avatar, pin)
                         if nuevo_id:
@@ -526,23 +665,13 @@ with tab1:
                             st.error('No se pudo crear la cuenta. Intenta otro nombre.')
     else:
         user_id = st.session_state['usuario_id']
-        user = db['usuarios'].get(user_id, {})
-        st.success(f"🔒 Sesión activa como {user.get('avatar', '')} {user.get('name', '')}")
+        usuario = usuarios_df[usuarios_df['usuario_id'] == user_id]
+        user = usuario.iloc[0].to_dict() if not usuario.empty else {}
+        st.success(f"🔒 Sesión activa como {user.get('avatar', '')} {user.get('nombre', '')}")
         st.markdown('---')
-        st.subheader('Editar perfil')
-        with st.form('perfil_form'):
-            nombre = st.text_input('Nombre', value=user.get('name', ''))
-            avatar = st.selectbox(
-                'Avatar',
-                ["⚽", "🏆", "🥇", "👤", "🧔", "👩"],
-                index=["⚽", "🏆", "🥇", "👤", "🧔", "👩"].index(user.get('avatar', '⚽')) if user.get('avatar') in ["⚽", "🏆", "🥇", "👤", "🧔", "👩"] else 0
-            )
-            if st.form_submit_button('Guardar cambios'):
-                if actualizar_perfil(user_id, nombre, avatar):
-                    st.success('Perfil actualizado.')
-                    st.experimental_rerun()
-                else:
-                    st.error('No se pudo actualizar el perfil. Elige otro nombre.')
+        if st.button('Cerrar Sesión'):
+            st.session_state['usuario_id'] = None
+            st.experimental_rerun()
 
 with tab2:
     st.header('⚽ Tus Pronósticos')
@@ -560,6 +689,7 @@ with tab2:
         if not partidos_gp:
             st.info('No hay partidos de fase de grupos disponibles.')
         else:
+            pron = obtener_quiniela_usuario(user_id, pronosticos_df)
             grupos = {}
             for partido in partidos_gp:
                 grupos.setdefault(partido.get('grupo', ''), []).append(partido)
@@ -569,14 +699,15 @@ with tab2:
                         mid = partido['id']
                         if mid is None:
                             continue
-                        col_a, col_b, col_c = st.columns([3,1,3])
+                        home_label = format_team_label(partido['home'])
+                        away_label = format_team_label(partido['away'])
+                        col_a, col_b, col_c = st.columns([4,1,3])
                         with col_a:
-                            st.write(f"{partido['home']} vs {partido['away']}")
+                            st.markdown(f"**{home_label} vs {away_label}**")
                         with col_b:
-                            pron = obtener_quiniela_usuario(user_id)
                             current = pron['gp'].get(str(mid), 'Seleccionar')
                             opcion = st.selectbox(
-                                f'gp_{mid}',
+                                f'Pronóstico {home_label} vs {away_label}',
                                 ['Seleccionar', '1', 'X', '2'],
                                 index=['Seleccionar', '1', 'X', '2'].index(current) if current in ['Seleccionar', '1', 'X', '2'] else 0,
                                 key=f'gp_{mid}',
@@ -592,6 +723,7 @@ with tab2:
         if not partidos_fp:
             st.info('No hay partidos de fase final disponibles.')
         else:
+            pron = obtener_quiniela_usuario(user_id, pronosticos_df)
             primeros_por_stage = obtener_primera_fecha_por_stage(df_fp)
             partidos_fp_ordenados = sorted(partidos_fp, key=lambda x: (x.get('stage_id', 999), x.get('id', 999)))
             etapas_por_stage = []
@@ -617,8 +749,7 @@ with tab2:
                             if mid is None:
                                 continue
                             nombre_partido = obtener_nombre_partido_fp(partido_stage, team_map)
-                            st.write(f"**{nombre_partido}**")
-                            pron = obtener_quiniela_usuario(user_id)
+                            st.markdown(f"**{nombre_partido}**")
                             pred = pron['fp'].get(str(mid), {'goles_local': 0, 'goles_visitante': 0, 'ganador_penaltis': None})
                             col1, col2 = st.columns(2)
                             with col1:
@@ -684,10 +815,10 @@ with tab3:
 with tab4:
     st.header('📊 Clasificación de la Quiniela')
     jugadores = []
-    for uid, usuario in db['usuarios'].items():
+    for _, usuario in usuarios_df.iterrows():
         jugadores.append({
-            'Participante': f"{usuario.get('avatar','')} {usuario.get('name','')}",
-            'Puntos Totales': puntos_usuario_quiniela(uid, partidos_gp, partidos_fp)
+            'Participante': f"{usuario.get('avatar','')} {usuario.get('nombre','')}",
+            'Puntos Totales': puntos_usuario_quiniela(usuario['usuario_id'], partidos_gp, partidos_fp)
         })
     if not jugadores:
         st.info('No hay usuarios registrados aún.')
@@ -696,4 +827,4 @@ with tab4:
         st.dataframe(df_jugadores.reset_index(drop=True))
 
 st.markdown('---')
-st.caption('Datos cargados desde Google Sheets y persistidos en porra_db.json.')
+st.caption('Datos cargados desde Google Sheets y persistidos en Google Sheets.')
