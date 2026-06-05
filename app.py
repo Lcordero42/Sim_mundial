@@ -156,6 +156,8 @@ TEAM_FLAG_MAP = {
     'japan': '🇯🇵',
     'southkorea': '🇰🇷',
     'korearepublic': '🇰🇷',
+    'southafrica': '🇿🇦',
+    'czechrepublic': '🇨🇿',
     'usa': '🇺🇸',
     'unitedstates': '🇺🇸',
     'australia': '🇦🇺',
@@ -701,20 +703,35 @@ with tab2:
                             continue
                         home_label = format_team_label(partido['home'])
                         away_label = format_team_label(partido['away'])
-                        col_a, col_b, col_c = st.columns([4,1,3])
+                        col_a, col_b, col_c = st.columns([2, 1, 1])
                         with col_a:
                             st.markdown(f"**{home_label} vs {away_label}**")
                         with col_b:
-                            current = pron['gp'].get(str(mid), 'Seleccionar')
-                            opcion = st.selectbox(
-                                f'Pronóstico {home_label} vs {away_label}',
-                                ['Seleccionar', '1', 'X', '2'],
-                                index=['Seleccionar', '1', 'X', '2'].index(current) if current in ['Seleccionar', '1', 'X', '2'] else 0,
-                                key=f'gp_{mid}',
+                            current = pron['gp'].get(str(mid))
+                            if current not in ['1', 'X', '2']:
+                                default_index = 0
+                            else:
+                                default_index = ['1', 'X', '2'].index(current)
+                            widget_key = f'gp_radio_{mid}'
+                            opcion = st.radio(
+                                'Tu apuesta',
+                                ['1', 'X', '2'],
+                                index=default_index,
+                                key=widget_key,
+                                horizontal=True,
+                                label_visibility='collapsed',
                                 disabled=not grupos_abiertos
                             )
-                            if grupos_abiertos and opcion != 'Seleccionar' and mid is not None:
-                                guardar_pronostico_gp(user_id, mid, opcion)
+                            if grupos_abiertos and mid is not None:
+                                saved_key = f'{widget_key}_saved'
+                                if current not in ['1', 'X', '2']:
+                                    if saved_key not in st.session_state:
+                                        st.session_state[saved_key] = opcion
+                                    elif opcion != st.session_state[saved_key]:
+                                        guardar_pronostico_gp(user_id, mid, opcion)
+                                        st.session_state[saved_key] = opcion
+                                elif opcion != current:
+                                    guardar_pronostico_gp(user_id, mid, opcion)
                         with col_c:
                             st.write(f"Resultado real: {partido['resultado_real'] or 'Pendiente'}")
 
