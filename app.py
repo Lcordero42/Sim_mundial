@@ -263,7 +263,7 @@ def guardar_pronostico_row(user_id: str, match_id: str, tipo_fase: str, pronosti
     payload = json.dumps(pronostico, ensure_ascii=False) if tipo_fase == 'fp' else str(pronostico)
     if mask.any():
         row_number = int(mask.idxmax()) + 2
-        worksheet.update(f'D{row_number}', payload)
+        worksheet.update_acell(f'D{row_number}', payload)
     else:
         worksheet.append_row([user_id, str(match_id), tipo_fase, payload], value_input_option='USER_ENTERED')
     st.cache_data.clear()
@@ -639,7 +639,7 @@ with tab1:
                     st.error('El PIN debe tener 4 dígitos.')
                 elif iniciar_sesion_usuario(nombre_login, pin_login):
                     st.success('🔒 Sesión iniciada correctamente.')
-                    st.experimental_rerun()
+                    st.rerun()
                 else:
                     st.error('Usuario o PIN incorrecto. Intenta nuevamente.')
 
@@ -660,7 +660,7 @@ with tab1:
                         if nuevo_id:
                             st.session_state['usuario_id'] = nuevo_id
                             st.success('🔒 Cuenta creada y sesión iniciada.')
-                            st.experimental_rerun()
+                            st.rerun()
                         else:
                             st.error('No se pudo crear la cuenta. Intenta otro nombre.')
     else:
@@ -671,7 +671,7 @@ with tab1:
         st.markdown('---')
         if st.button('Cerrar Sesión'):
             st.session_state['usuario_id'] = None
-            st.experimental_rerun()
+            st.rerun()
 
 with tab2:
     st.header('⚽ Tus Pronósticos')
