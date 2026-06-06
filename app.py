@@ -840,7 +840,7 @@ with tab2:
         if st.button('💾 Guardar todos mis pronósticos', use_container_width=True):
             if guardar_pronosticos_batch(user_id):
                 st.success('✅ Pronósticos guardados correctamente en Google Sheets.')
-                st.experimental_rerun()
+                st.rerun()
             else:
                 st.warning('No hay cambios pendientes para guardar.')
 
