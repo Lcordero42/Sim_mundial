@@ -353,6 +353,21 @@ def store_pending_fp(user_id: str, match_id: int, campo: str, valor):
         partido['ganador_penaltis'] = None
 
 
+def collect_gp_pronosticos_from_state(user_id: str):
+    pending = get_pending_pronosticos_for_user(user_id)
+    for partido in partidos_gp:
+        match_id = partido.get('id')
+        if match_id is None:
+            continue
+        widget_key = f'gp_radio_{match_id}'
+        valor = st.session_state.get(widget_key, '')
+        if valor is None or str(valor).strip() == '':
+            valor = '1'
+        if valor not in ['1', 'X', '2']:
+            valor = '1'
+        pending['gp'][str(match_id)] = valor
+
+
 def merge_fp_pronostico(existing: dict, pending: dict) -> dict:
     merged = {
         'goles_local': int(existing.get('goles_local', 0) or 0),
@@ -369,6 +384,7 @@ def merge_fp_pronostico(existing: dict, pending: dict) -> dict:
 
 
 def guardar_pronosticos_batch(user_id: str) -> bool:
+    collect_gp_pronosticos_from_state(user_id)
     pending = get_pending_pronosticos_for_user(user_id)
     if not pending['gp'] and not pending['fp']:
         return False
@@ -1058,3 +1074,25 @@ with tab4:
 
 st.markdown('---')
 st.caption('Datos cargados desde Google Sheets y persistidos en Google Sheets.')
+
+
+def corregir_pronosticos_vacios() -> int:
+    worksheet = get_pronosticos_worksheet()
+    df = worksheet_to_dataframe(worksheet, PRONOSTICOS_COLUMNS)
+    batch_updates = []
+    for idx, row in df.iterrows():
+        pron = str(row.get('pronostico', '') or '').strip()
+        if pron == '':
+            batch_updates.append({'range': f'D{idx + 2}', 'values': [['1']]})
+    if batch_updates:
+        worksheet.batch_update(batch_updates)
+        cargar_pronosticos_sheet.clear()
+    return len(batch_updates)
+
+with st.expander('🔧 Herramientas de Desarrollo', expanded=False):
+    if st.button('🔧 Ejecutar Parche: Rellenar vacíos con 1'):
+        reparados = corregir_pronosticos_vacios()
+        if reparados:
+            st.success(f'Se corrigieron {reparados} filas con pronóstico vacío.')
+        else:
+            st.info('No se encontraron filas con pronóstico vacío.')
