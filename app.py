@@ -1089,12 +1089,13 @@ def corregir_pronosticos_vacios() -> int:
         cargar_pronosticos_sheet.clear()
     return len(batch_updates)
 
-col_left, col_right = st.columns([2, 1])
-with col_left:
-    with st.expander('🔧 Herramientas de Desarrollo', expanded=False):
-        if st.button('🔧 Ejecutar Parche: Rellenar vacíos con 1'):
-            reparados = corregir_pronosticos_vacios()
-            if reparados:
-                st.success(f'Se corrigieron {reparados} filas con pronóstico vacío.')
-            else:
-                st.info('No se encontraron filas con pronóstico vacío.')
+
+with st.sidebar:
+    st.markdown("---")
+    st.subheader("🔧 Administración")
+    if st.button('🚀 Ejecutar Parche: Rellenar vacíos con 1'):
+        reparados = corregir_pronosticos_vacios()
+        if reparados:
+            st.success(f'Se corrigieron {reparados} filas.')
+        else:
+            st.info('No hay filas vacías.')
