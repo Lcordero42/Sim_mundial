@@ -1084,48 +1084,46 @@ st.caption('Datos cargados desde Google Sheets y persistidos en Google Sheets.')
 
 def corregir_pronosticos_vacios() -> int:
     worksheet = get_pronosticos_worksheet()
-    # Leemos la hoja
-    df = worksheet_to_dataframe(worksheet, PRONOSTICOS_COLUMNS)
+    # Obtenemos los valores puros de la hoja (lista de listas)
+    # Esto ignora totalmente los nombres de las columnas y errores de Pandas
+    all_data = worksheet.get_all_values()
     
-    # 🛡️ BLINDAJE: Fuerza los nombres de las columnas a minúsculas y sin espacios
-    df.columns = [str(col).strip().lower() for col in df.columns]
+    if len(all_data) <= 1:
+        return 0
+        
+    # Saltamos la fila 1 (encabezados) y procesamos el resto
+    rows = all_data[1:]
     
-    # Aseguramos que las columnas existen para evitar errores
-    for col in ['usuario_id', 'match_id', 'tipo_fase']:
-        if col not in df.columns:
-            df[col] = ''
+    # 1. Identificar usuarios existentes basándonos en la Columna A (índice 0)
+    usuarios_en_sheet = set()
+    user_partidos = {} # Guardará { user_id: set(match_ids) }
     
-    # Limpieza de datos
-    df['usuario_id'] = df['usuario_id'].astype(str).str.strip()
-    df['match_id'] = df['match_id'].astype(str).str.strip()
-    df['tipo_fase'] = df['tipo_fase'].astype(str).str.strip().lower()
+    for row in rows:
+        if len(row) < 3: continue
+        u_id = str(row[0]).strip()
+        m_id = str(row[1]).strip()
+        fase = str(row[2]).strip().lower()
+        
+        if u_id:
+            usuarios_en_sheet.add(u_id)
+            if fase == 'gp':
+                if u_id not in user_partidos: user_partidos[u_id] = set()
+                user_partidos[u_id].add(m_id)
     
-    # 1. Obtenemos la lista de usuarios que ya han guardado algo
-    usuarios_registrados = df[df['usuario_id'] != '']['usuario_id'].unique()
-    
+    # 2. Generar filas faltantes
     append_rows = []
-    
-    # 2. Cruzamos usuarios con todos los partidos (partidos_gp viene de tu variable global)
-    for user_id in usuarios_registrados:
-        # Qué partidos tiene este usuario ya guardados
-        partidos_que_ya_tiene = set(
-            df[(df['usuario_id'] == user_id) & (df['tipo_fase'] == 'gp')]['match_id']
-        )
+    for user_id in usuarios_en_sheet:
+        ya_tiene = user_partidos.get(user_id, set())
         
         for partido in partidos_gp:
             match_id = str(partido.get('id', '')).strip()
-            if not match_id:
-                continue
-                
-            # Si al usuario le falta este partido, lo marcamos para añadir
-            if match_id not in partidos_que_ya_tiene:
-                # Añadimos la fila con '1' por defecto
+            if match_id and match_id not in ya_tiene:
+                # [usuario, match_id, tipo_fase, pronostico]
                 append_rows.append([user_id, match_id, 'gp', '1'])
                 
-    # 3. Guardamos los cambios
+    # 3. Guardar
     if append_rows:
         worksheet.append_rows(append_rows, value_input_option='USER_ENTERED')
-        # Limpiamos caché para que la web vea los cambios
         if 'cargar_pronosticos_sheet' in globals():
             cargar_pronosticos_sheet.clear()
             
