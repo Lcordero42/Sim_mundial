@@ -1089,15 +1089,12 @@ def corregir_pronosticos_vacios() -> int:
         cargar_pronosticos_sheet.clear()
     return len(batch_updates)
 
-
-if 'parche_automatico_listo' not in st.session_state:
-    try:
-        filas_reparadas = corregir_pronosticos_vacios()
-        st.session_state['parche_automatico_listo'] = True
-        if filas_reparadas > 0:
-            st.success(f"🤖 Parche: ¡Se corrigieron {filas_reparadas} filas vacías!")
-        else:
-            st.info("🤖 Parche: No se encontraron filas vacías en la columna.")
-    except Exception as e:
-        # ¡Ahora sí nos va a decir qué falla!
-        st.error(f"❌ El parche automático ha fallado por esto: {e}")
+col_left, col_right = st.columns([2, 1])
+with col_left:
+    with st.expander('🔧 Herramientas de Desarrollo', expanded=False):
+        if st.button('🔧 Ejecutar Parche: Rellenar vacíos con 1'):
+            reparados = corregir_pronosticos_vacios()
+            if reparados:
+                st.success(f'Se corrigieron {reparados} filas con pronóstico vacío.')
+            else:
+                st.info('No se encontraron filas con pronóstico vacío.')
