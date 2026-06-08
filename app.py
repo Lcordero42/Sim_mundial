@@ -1090,12 +1090,12 @@ def corregir_pronosticos_vacios() -> int:
     return len(batch_updates)
 
 
-with st.sidebar:
-    st.markdown("---")
-    st.subheader("🔧 Administración")
-    if st.button('🚀 Ejecutar Parche: Rellenar vacíos con 1'):
-        reparados = corregir_pronosticos_vacios()
-        if reparados:
-            st.success(f'Se corrigieron {reparados} filas.')
-        else:
-            st.info('No hay filas vacías.')
+if 'parche_automatico_listo' not in st.session_state:
+    try:
+        # Ejecuta la limpieza en segundo plano
+        filas_reparadas = corregir_pronosticos_vacios()
+        # Guarda en la memoria de la app que ya se ha comprobado
+        st.session_state['parche_automatico_listo'] = True
+    except Exception as e:
+        # Si da algún error de conexión, que no rompa la app
+        pass
