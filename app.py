@@ -359,12 +359,18 @@ def collect_gp_pronosticos_from_state(user_id: str):
         match_id = partido.get('id')
         if match_id is None:
             continue
+            
         widget_key = f'gp_radio_{match_id}'
+        # Capturamos lo que haya en la pantalla
         valor = st.session_state.get(widget_key, '')
+        
+        # 🚨 LA MAGIA: Si está vacío (no lo han tocado), forzamos el '1'
         if valor is None or str(valor).strip() == '':
             valor = '1'
         if valor not in ['1', 'X', '2']:
             valor = '1'
+            
+        # Lo metemos en la lista de pendientes a guardar sí o sí
         pending['gp'][str(match_id)] = valor
 
 
