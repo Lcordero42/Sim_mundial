@@ -1092,10 +1092,12 @@ def corregir_pronosticos_vacios() -> int:
 
 if 'parche_automatico_listo' not in st.session_state:
     try:
-        # Ejecuta la limpieza en segundo plano
         filas_reparadas = corregir_pronosticos_vacios()
-        # Guarda en la memoria de la app que ya se ha comprobado
         st.session_state['parche_automatico_listo'] = True
+        if filas_reparadas > 0:
+            st.success(f"🤖 Parche: ¡Se corrigieron {filas_reparadas} filas vacías!")
+        else:
+            st.info("🤖 Parche: No se encontraron filas vacías en la columna.")
     except Exception as e:
-        # Si da algún error de conexión, que no rompa la app
-        pass
+        # ¡Ahora sí nos va a decir qué falla!
+        st.error(f"❌ El parche automático ha fallado por esto: {e}")
