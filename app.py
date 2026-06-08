@@ -1085,28 +1085,41 @@ st.caption('Datos cargados desde Google Sheets y persistidos en Google Sheets.')
 def corregir_pronosticos_vacios() -> int:
     worksheet = get_pronosticos_worksheet()
     df = worksheet_to_dataframe(worksheet, PRONOSTICOS_COLUMNS)
-    batch_updates = []
     
-    for idx, row in df.iterrows():
-        user_id = str(row.get('usuario_id', '') or '').strip()
-        match_id = str(row.get('match_id', '') or '').strip()
+    # Limpiamos los datos para evitar fallos por espacios o mayúsculas
+    df['usuario_id'] = df['usuario_id'].astype(str).str.strip()
+    df['match_id'] = df['match_id'].astype(str).str.strip()
+    df['tipo_fase'] = df['tipo_fase'].astype(str).str.strip().lower()
+    
+    # 1. Obtenemos la lista de todos los usuarios que ya han guardado ALGO en la app
+    usuarios_registrados = df[df['usuario_id'] != '']['usuario_id'].unique()
+    
+    append_rows = []
+    
+    # 2. Cruzamos cada usuario con TODOS los partidos oficiales del torneo
+    for user_id in usuarios_registrados:
+        # Buscamos qué partidos YA tiene este usuario guardados en la fase de grupos
+        partidos_que_ya_tiene = set(
+            df[(df['usuario_id'] == user_id) & (df['tipo_fase'] == 'gp')]['match_id']
+        )
         
-        # 🚨 CAZADOR DE REBELDES: Detectamos si la celda está vacía, es None o se convirtió en 'nan'
-        pron_original = row.get('pronostico')
-        pron = str(pron_original).strip().lower() if pd.notna(pron_original) else ''
-        
-        # Si el usuario existe, pero el pronóstico está vacío, es 'nan' o es 'none'
-        if user_id != '' and match_id != '':
-            if pron == '' or pron == 'nan' or pron == 'none':
-                # Apuntamos a la columna D y le clavamos el '1' por defecto que debió guardarse
-                batch_updates.append({'range': f'D{idx + 2}', 'values': [['1']]})
+        for partido in partidos_gp:
+            match_id = str(partido.get('id', '')).strip()
+            if not match_id:
+                continue
                 
-    if batch_updates:
-        worksheet.batch_update(batch_updates)
+            # 🚀 SI EL PARTIDO NO EXISTE EN GOOGLE SHEETS PARA ESTE USUARIO:
+            if match_id not in partidos_que_ya_tiene:
+                # Creamos la fila desde cero asignándole el '1' por defecto
+                append_rows.append([user_id, match_id, 'gp', '1'])
+                
+    # 3. Inyectamos todas las filas faltantes de un solo golpe en el Excel
+    if append_rows:
+        worksheet.append_rows(append_rows, value_input_option='USER_ENTERED')
         if 'cargar_pronosticos_sheet' in globals():
             cargar_pronosticos_sheet.clear()
             
-    return len(batch_updates)
+    return len(append_rows)
 
 col_left, col_right = st.columns([2, 1])
 with col_left:
