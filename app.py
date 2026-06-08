@@ -1084,21 +1084,30 @@ st.caption('Datos cargados desde Google Sheets y persistidos en Google Sheets.')
 
 def corregir_pronosticos_vacios() -> int:
     worksheet = get_pronosticos_worksheet()
+    # Leemos la hoja
     df = worksheet_to_dataframe(worksheet, PRONOSTICOS_COLUMNS)
     
-    # Limpiamos los datos para evitar fallos por espacios o mayúsculas
+    # 🛡️ BLINDAJE: Fuerza los nombres de las columnas a minúsculas y sin espacios
+    df.columns = [str(col).strip().lower() for col in df.columns]
+    
+    # Aseguramos que las columnas existen para evitar errores
+    for col in ['usuario_id', 'match_id', 'tipo_fase']:
+        if col not in df.columns:
+            df[col] = ''
+    
+    # Limpieza de datos
     df['usuario_id'] = df['usuario_id'].astype(str).str.strip()
     df['match_id'] = df['match_id'].astype(str).str.strip()
     df['tipo_fase'] = df['tipo_fase'].astype(str).str.strip().lower()
     
-    # 1. Obtenemos la lista de todos los usuarios que ya han guardado ALGO en la app
+    # 1. Obtenemos la lista de usuarios que ya han guardado algo
     usuarios_registrados = df[df['usuario_id'] != '']['usuario_id'].unique()
     
     append_rows = []
     
-    # 2. Cruzamos cada usuario con TODOS los partidos oficiales del torneo
+    # 2. Cruzamos usuarios con todos los partidos (partidos_gp viene de tu variable global)
     for user_id in usuarios_registrados:
-        # Buscamos qué partidos YA tiene este usuario guardados en la fase de grupos
+        # Qué partidos tiene este usuario ya guardados
         partidos_que_ya_tiene = set(
             df[(df['usuario_id'] == user_id) & (df['tipo_fase'] == 'gp')]['match_id']
         )
@@ -1108,14 +1117,15 @@ def corregir_pronosticos_vacios() -> int:
             if not match_id:
                 continue
                 
-            # 🚀 SI EL PARTIDO NO EXISTE EN GOOGLE SHEETS PARA ESTE USUARIO:
+            # Si al usuario le falta este partido, lo marcamos para añadir
             if match_id not in partidos_que_ya_tiene:
-                # Creamos la fila desde cero asignándole el '1' por defecto
+                # Añadimos la fila con '1' por defecto
                 append_rows.append([user_id, match_id, 'gp', '1'])
                 
-    # 3. Inyectamos todas las filas faltantes de un solo golpe en el Excel
+    # 3. Guardamos los cambios
     if append_rows:
         worksheet.append_rows(append_rows, value_input_option='USER_ENTERED')
+        # Limpiamos caché para que la web vea los cambios
         if 'cargar_pronosticos_sheet' in globals():
             cargar_pronosticos_sheet.clear()
             
