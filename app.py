@@ -1080,13 +1080,26 @@ def corregir_pronosticos_vacios() -> int:
     worksheet = get_pronosticos_worksheet()
     df = worksheet_to_dataframe(worksheet, PRONOSTICOS_COLUMNS)
     batch_updates = []
+    
     for idx, row in df.iterrows():
-        pron = str(row.get('pronostico', '') or '').strip()
-        if pron == '':
-            batch_updates.append({'range': f'D{idx + 2}', 'values': [['1']]})
+        user_id = str(row.get('usuario_id', '') or '').strip()
+        match_id = str(row.get('match_id', '') or '').strip()
+        
+        # 🚨 CAZADOR DE REBELDES: Detectamos si la celda está vacía, es None o se convirtió en 'nan'
+        pron_original = row.get('pronostico')
+        pron = str(pron_original).strip().lower() if pd.notna(pron_original) else ''
+        
+        # Si el usuario existe, pero el pronóstico está vacío, es 'nan' o es 'none'
+        if user_id != '' and match_id != '':
+            if pron == '' or pron == 'nan' or pron == 'none':
+                # Apuntamos a la columna D y le clavamos el '1' por defecto que debió guardarse
+                batch_updates.append({'range': f'D{idx + 2}', 'values': [['1']]})
+                
     if batch_updates:
         worksheet.batch_update(batch_updates)
-        cargar_pronosticos_sheet.clear()
+        if 'cargar_pronosticos_sheet' in globals():
+            cargar_pronosticos_sheet.clear()
+            
     return len(batch_updates)
 
 col_left, col_right = st.columns([2, 1])
