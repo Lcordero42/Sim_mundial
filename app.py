@@ -729,44 +729,100 @@ def puntos_usuario_quiniela(usuario_id: str, partidos_gp: list, partidos_fp: lis
     puntos = 0
     pronosticos = obtener_quiniela_usuario(usuario_id)
 
+    # 1. FASE DE GRUPOS (Esto ya funcionaba bien)
     for partido in partidos_gp:
         match_id = partido.get('id')
-        if match_id is None:
-            continue
+        if not match_id: continue
         real = partido.get('resultado_real')
-        if not real:
-            continue
+        if not real: continue
         pred = pronosticos['gp'].get(str(match_id))
         if pred and str(pred).upper() == real:
             puntos += 1
 
+    # 2. FASE FINAL
     for partido in partidos_fp:
         match_id = partido.get('id')
-        if match_id is None:
-            continue
+        if match_id is None: continue
+            
+        # Obtenemos los valores de forma segura (usando las llaves correctas de tu Sheet)
+        h_id = partido.get('home_team_id')
+        a_id = partido.get('away_team_id')
+        
         home_goals_real = partido.get('home_goals_real')
         away_goals_real = partido.get('away_goals_real')
         team_winner_real = partido.get('team_winner_real')
-        if home_goals_real is None or away_goals_real is None:
-            continue
+        
+        # Validación básica de datos reales
+        if home_goals_real is None or away_goals_real is None: continue
+        
         pred_fp = pronosticos['fp'].get(str(match_id))
-        if not isinstance(pred_fp, dict):
-            continue
+        if not isinstance(pred_fp, dict): continue
+            
         home_goals_pred = pred_fp.get('goles_local')
         away_goals_pred = pred_fp.get('goles_visitante')
-        if home_goals_pred is None or away_goals_pred is None:
-            continue
-        if home_goals_pred == home_goals_real and away_goals_pred == away_goals_real:
-            if home_goals_real == away_goals_real:
-                ganador_pred = pred_fp.get('ganador_penaltis')
-                if ganador_pred is None:
-                    continue
-                if isinstance(ganador_pred, str) and team_winner_real is not None:
-                    equipo_real = team_map.get(team_winner_real, '')
-                    if ganador_pred == equipo_real:
-                        puntos += 1
+        if home_goals_pred is None or away_goals_pred is None: continue
+
+        # Conversiones seguras
+       # 1. Limpieza absoluta de goles (asegurando enteros)
+        r_local = int(float(home_goals_real))
+        r_away = int(float(away_goals_real))
+        p_local = int(float(home_goals_pred))
+        p_away = int(float(away_goals_pred))
+
+        puntos_partido = 0
+        log_puntos = []
+
+        # 🎯 Punto 1: Goles Local
+        if p_local == r_local:
+            puntos_partido += 1
+            log_puntos.append("+1 Goles Local")
+        else:
+            log_puntos.append(f"❌ Fallo Goles Local: {p_local} != {r_local}")
+
+        # 🎯 Punto 2: Goles Visitante
+        if p_away == r_away:
+            puntos_partido += 1
+            log_puntos.append("+1 Goles Visitante")
+        else:
+            log_puntos.append(f"❌ Fallo Goles Visitante: {p_away} != {r_away}")
+
+        # 🎯 Punto 3: Ganador (DEBUG DETALLADO)
+        # Vamos a intentar obtener el nombre del equipo probando tanto el ID como string como entero
+        def get_team_name(id_val):
+            if id_val is None: return None
+            id_int = int(float(id_val))
+            # Intentamos buscar como entero, si falla, intentamos como string
+            res = team_map.get(id_int)
+            if res is None:
+                res = team_map.get(str(id_int))
+            return res
+
+        h_id_val = partido.get('home_id')
+        a_id_val = partido.get('away_id')
+
+        # Calcular ganadores
+        ganador_real = None
+        if r_local > r_away: ganador_real = get_team_name(h_id_val)
+        elif r_away > r_local: ganador_real = get_team_name(a_id_val)
+        elif pd.notna(team_winner_real): 
+            ganador_real = get_team_name(team_winner_real)
+
+        ganador_pred = None
+        if p_local > p_away: ganador_pred = get_team_name(h_id_val)
+        elif p_away > p_local: ganador_pred = get_team_name(a_id_val)
+        else: ganador_pred = pred_fp.get('ganador_penaltis')
+
+
+        if ganador_real and ganador_pred:
+            if normalize_team_key(str(ganador_real)) == normalize_team_key(str(ganador_pred)):
+                puntos_partido += 1
+                log_puntos.append("+1 Ganador")
             else:
-                puntos += 1
+                log_puntos.append("❌ Ganadores diferentes")
+        else:
+            log_puntos.append("❌ No se pudo determinar el ganador")
+
+        puntos += puntos_partido
     return puntos
 
 
@@ -1068,9 +1124,12 @@ with tab4:
     st.header('📊 Clasificación de la Quiniela')
     jugadores = []
     for _, usuario in usuarios_df.iterrows():
+        # Calculamos el punto
+        pts = puntos_usuario_quiniela(usuario['usuario_id'], partidos_gp, partidos_fp)
+        
         jugadores.append({
             'Participante': f"{usuario.get('avatar','')} {usuario.get('nombre','')}",
-            'Puntos Totales': puntos_usuario_quiniela(usuario['usuario_id'], partidos_gp, partidos_fp)
+            'Puntos Totales': pts
         })
     if not jugadores:
         st.info('No hay usuarios registrados aún.')
