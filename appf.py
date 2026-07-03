@@ -393,18 +393,16 @@ def guardar_pronosticos_batch(user_id: str) -> bool:
     collect_gp_pronosticos_from_state(user_id)
     pending = get_pending_pronosticos_for_user(user_id)
     
-    # Collect FP penaltis from session state (only for matches that were edited)
+    # Collect FP penaltis from session state (including those never touched by user)
     for key in list(st.session_state.keys()):
         if key.startswith('fp_penaltis_'):
             parts = key.split('_')
             if len(parts) >= 3:
                 try:
                     match_id = str(parts[2])
-                    # Only add penaltis if the match was edited (in pending['fp'])
-                    if match_id in pending['fp']:
-                        ganador = st.session_state.get(key)
-                        if ganador:
-                            pending['fp'][match_id]['ganador_penaltis'] = ganador
+                    ganador = st.session_state.get(key)
+                    if ganador:
+                        pending['fp'].setdefault(match_id, {})['ganador_penaltis'] = ganador
                 except Exception:
                     pass
     
@@ -1090,6 +1088,8 @@ with tab2:
                                 away_name = resolver_nombre_fp(partido_stage, team_map, local=False)
                                 opciones_penaltis = [local_name, away_name]
                                 seleccion_actual = pred.get('ganador_penaltis')
+                                if seleccion_actual is None:
+                                    seleccion_actual = local_name
                                 opcion_index = opciones_penaltis.index(seleccion_actual) if seleccion_actual in opciones_penaltis else 0
                                 
                                 widget_key_penaltis = f'fp_penaltis_{mid}_{idx}'
@@ -1097,6 +1097,8 @@ with tab2:
                                 
                                 if prev_key_penaltis not in st.session_state:
                                     st.session_state[prev_key_penaltis] = seleccion_actual
+                                if widget_key_penaltis not in st.session_state:
+                                    st.session_state[widget_key_penaltis] = seleccion_actual
                                 
                                 def on_change_penaltis(mid=mid, user_id=user_id, widget_key_penaltis=widget_key_penaltis, prev_key_penaltis=prev_key_penaltis, prev_key_fp=prev_key_fp):
                                     ganador = st.session_state.get(widget_key_penaltis)
